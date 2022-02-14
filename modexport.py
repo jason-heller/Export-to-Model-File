@@ -67,6 +67,8 @@ class ExportMOD(bpy.types.Operator, ExportHelper, IOOBJOrientationHelper):
         indices     = []                # /
 
         translation = []                # In case the mesh is translated in blender
+        
+        maxInfluence = 3                # Max number of bones allows to influence a single vertex
 
         for object in bpy.data.objects:
             if object.type == "MESH":
@@ -77,8 +79,6 @@ class ExportMOD(bpy.types.Operator, ExportHelper, IOOBJOrientationHelper):
 
         i = 0
 
-        maxInfluence = 3
-        
         print("Beginning .MOD export...")
 
         for mesh in bpy.data.meshes:
@@ -130,11 +130,14 @@ class ExportMOD(bpy.types.Operator, ExportHelper, IOOBJOrientationHelper):
             
             i += 1
 
-        # Reorganize vertices, texture coords, and indices
-        newVertexArray = []
-        newTexCoordArray = []
+        # Since when parsing .MOD files, vertices have a 1:1 relationship with texture coords, normals, weights, and bone IDs,
+        # we must reorganize this data, as in blender texture coords exists w.r.t. faces
+        newVertexArray      = []
+        newTexCoordArray    = []
         
         curIndexId = -1
+        mesh = bpy.data.meshes
+        
         for polygon in mesh.polygons:
             for j in range(0,3):
                 exists = False
@@ -151,8 +154,25 @@ class ExportMOD(bpy.types.Operator, ExportHelper, IOOBJOrientationHelper):
                     newTexCoordArray.append(curIndexId)
                     indices.append(len(newVertexArray) - 1)
         
-        # Add to arrays
+        """
+            SET HEADER DATA
+        """
+        header.append(numObjects)
         
+        """
+            SET OBJECT DATA
+        """
+        for i in range(numObjects):
+            objects.append( i )                                      # materialId
+            objects.append( len( mesh[i].vertices ) )                # numVertices
+            objects.append( len( mesh[i].polygons ) * 3 )            # numFaces
+            print("Data for object %d" % (i))
+            print(str(len( mesh[i].vertices )) + " vertices")
+            print(str(len( mesh[i].polygons )) + " faces")
+        
+        """
+            SET MESH DATA
+        """
         for x in range(len(newVertexArray)):
             vertId = newVertexArray[x]
             texCoordId = newTexCoordArray[x]
@@ -171,34 +191,18 @@ class ExportMOD(bpy.types.Operator, ExportHelper, IOOBJOrientationHelper):
             normals.extend(vertex.normal)
             weights.extend(weightsUnsorted[vertId])
             boneIds.extend(boneIdsUnsorted[vertId])
-
+ 
         """
-            SET HEADER
+            SET ARMATURE DATA
         """
-        header.append( numObjects )
-
-        """
-            SET OBJECTS
-        """
-        mesh = bpy.data.meshes
-
-        for i in range(numObjects):
-            objects.append( i )                                      # materialId
-            objects.append( len( mesh[i].vertices ) )                # numVertices
-            objects.append( len( mesh[i].polygons ) * 3 )            # numFaces
-            print("Data for object %d" % (i))
-            print(str(len( mesh[i].vertices )) + " vertices")
-            print(str(len( mesh[i].polygons )) + " faces")
-            
-        """
-            ARMATURE DATA
-        """
-        boneNames = []
+        boneNames       = []
         boneNameOffests = []
+        boneMatrices    = []
+        boneParents     = []
+        
         offset = 0
-        boneMatrices = []
-        boneParents = []
-        rig = None #bpy.data.objects['Armature']
+        # TODO: Find better way to do this
+        rig = None # bpy.data.objects['Armature']
         for armature in [ob for ob in bpy.data.objects if ob.type == 'ARMATURE']:
             rig = armature
             break
@@ -227,7 +231,7 @@ class ExportMOD(bpy.types.Operator, ExportHelper, IOOBJOrientationHelper):
             
 
         """
-            WRITE TO BINARY FILE
+            WRITE EVERYTHING TO FILE
         """
         
         print("Exporting to: " + self.filepath)
@@ -275,7 +279,6 @@ class ExportMOD(bpy.types.Operator, ExportHelper, IOOBJOrientationHelper):
         f.close()
         
         print("Finished")
-
         return {'FINISHED'}
     
 def menu_func_export(self, context):
