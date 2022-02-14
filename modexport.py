@@ -50,14 +50,11 @@ class ExportMOD(bpy.types.Operator, ExportHelper, IOOBJOrientationHelper):
         # Force into object mode
         if bpy.ops.object.mode_set.poll():
             bpy.ops.object.mode_set(mode='OBJECT')
-            
-        numObjects        = len(bpy.data.meshes)
-
-        header  = []                    # All data relating to the header for export (in ints)
-        objects = []                    # All data relating to the objects for export
         
         weightsUnsorted     = []        # \ The weights and respective bones, in the same order as mesh.vertices
         boneIdsUnsorted     = []        # /
+        
+        objects     = []
         
         vertices    = []                # \ 
         texCoords   = []                # |
@@ -70,17 +67,18 @@ class ExportMOD(bpy.types.Operator, ExportHelper, IOOBJOrientationHelper):
         
         maxInfluence = 3                # Max number of bones allows to influence a single vertex
 
+        i = 0
         for object in bpy.data.objects:
             if object.type == "MESH":
                 x = object.matrix_local[0].w
                 y = object.matrix_local[1].w
                 z = object.matrix_local[2].w
                 translation.append([x, y, z])
-
-        i = 0
-
+                break
+            i += 1
+        
         print("Beginning .MOD export...")
-
+        
         for mesh in bpy.data.meshes:
             
             #set vertices
@@ -127,158 +125,146 @@ class ExportMOD(bpy.types.Operator, ExportHelper, IOOBJOrientationHelper):
                 for x in range(len(byWeight) - 1, maxInfluence):
                     weightsUnsorted.append( 0 )
                     boneIdsUnsorted.append( 0 )
-            
-            i += 1
 
-        # Since when parsing .MOD files, vertices have a 1:1 relationship with texture coords, normals, weights, and bone IDs,
-        # we must reorganize this data, as in blender texture coords exists w.r.t. faces
-        newVertexArray      = []
-        newTexCoordArray    = []
-        
-        curIndexId = -1
-        mesh = bpy.data.meshes
-        
-        for polygon in mesh.polygons:
-            for j in range(0,3):
-                exists = False
-                curIndexId += 1
+            # Since when parsing .MOD files, vertices have a 1:1 relationship with texture coords, normals, weights, and bone IDs,
+            # we must reorganize this data, as in blender texture coords exists w.r.t. faces
+            newVertexArray      = []
+            newTexCoordArray    = []
             
-                for k in range(0, len(newVertexArray)):
-                    if newVertexArray[k] == polygon.vertices[j] and curIndexId == newTexCoordArray[k]:
-                        indices.append(k)
-                        exists = True
-                        break
+            curIndexId = -1
+            
+            for polygon in mesh.polygons:
+                for j in range(0,3):
+                    exists = False
+                    curIndexId += 1
                 
-                if not exists:
-                    newVertexArray.append(polygon.vertices[j])
-                    newTexCoordArray.append(curIndexId)
-                    indices.append(len(newVertexArray) - 1)
-        
-        """
-            SET HEADER DATA
-        """
-        header.append(numObjects)
-        
-        """
-            SET OBJECT DATA
-        """
-        for i in range(numObjects):
-            objects.append( i )                                      # materialId
-            objects.append( len( mesh[i].vertices ) )                # numVertices
-            objects.append( len( mesh[i].polygons ) * 3 )            # numFaces
-            print("Data for object %d" % (i))
-            print(str(len( mesh[i].vertices )) + " vertices")
-            print(str(len( mesh[i].polygons )) + " faces")
-        
-        """
-            SET MESH DATA
-        """
-        for x in range(len(newVertexArray)):
-            vertId = newVertexArray[x]
-            texCoordId = newTexCoordArray[x]
+                    for k in range(0, len(newVertexArray)):
+                        if newVertexArray[k] == polygon.vertices[j] and curIndexId == newTexCoordArray[k]:
+                            indices.append(k)
+                            exists = True
+                            break
+                    
+                    if not exists:
+                        newVertexArray.append(polygon.vertices[j])
+                        newTexCoordArray.append(curIndexId)
+                        indices.append(len(newVertexArray) - 1)
             
-            vertex = mesh.vertices[vertId]
-            x = vertex.co.x
-            y = vertex.co.y
-            z = vertex.co.z
-            vertices.extend([y + translation[i][1], z + translation[i][2], x + translation[i][0]])
+            """
+                SET OBJECT DATA
+            """
+            objects.append( 0 )                                   # materialId (placeholder)
+            objects.append( len( mesh.vertices ) )                # numVertices
+            objects.append( len( mesh.polygons ) * 3 )            # numFaces
+            print(str(len( mesh.vertices )) + " vertices")
+            print(str(len( mesh.polygons )) + " faces") 
             
-            if mesh.uv_layers is None:
-                texCoords.extend([0, 0]) 
+            """
+                SET MESH DATA
+            """
+            for x in range(len(newVertexArray)):
+                vertId = newVertexArray[x]
+                texCoordId = newTexCoordArray[x]
+                
+                vertex = mesh.vertices[vertId]
+                x = vertex.co.x
+                y = vertex.co.y
+                z = vertex.co.z
+                vertices.extend([y + translation[i][1], z + translation[i][2], x + translation[i][0]])
+                
+                if mesh.uv_layers is None:
+                    texCoords.extend([0, 0]) 
+                else:
+                    texCoords.extend( mesh.uv_layers.active.data[texCoordId].uv ) 
+                    
+                normals.extend(vertex.normal)
+                weights.append(weightsUnsorted[vertId])
+                boneIds.append(boneIdsUnsorted[vertId])
+     
+            """
+                SET ARMATURE DATA
+            """
+            boneNames       = []
+            boneNameOffests = []
+            boneMatrices    = []
+            boneParents     = []
+            
+            offset = 0
+            # TODO: Find better way to do this
+            rig = None # bpy.data.objects['Armature']
+            for armature in [ob for ob in bpy.data.objects if ob.type == 'ARMATURE']:
+                rig = armature
+                break
+
+            if rig is not None:
+                
+                boneNameOffests.append(len( rig.data.bones ))        # number of bones
+            
+                for x, b in enumerate(rig.data.bones):
+                    tempString = b.name
+                    tempList   = [ord(c) for c in tempString]
+                    boneNames.extend( tempList )
+                    boneNameOffests.append( offset )
+                    offset += len( tempList )
+                    boneNameOffests.append( len( tempList ) )
+                    
+                    for j in range(3):
+                        for i in range(3):
+                            boneMatrices.append( b.matrix[i][j] )
+                    
+                    parentid = -1
+                    if b.parent is not None:
+                        parentid = rig.data.bones.find( b.parent.name )
+                    
+                    boneParents.append( parentid )
+                
+
+            """
+                WRITE EVERYTHING TO FILE
+            """
+            
+            print("Exporting to: " + self.filepath)
+            f = open(self.filepath, "wb")
+
+            magicNumber       = array.array('b', 'MOD4'.encode())
+            objectsArray       = array.array('i', objects)
+            verticesArray     = array.array('f', vertices)
+            texCoordArray     = array.array('f', texCoords)
+            normalsArray      = array.array('f', normals)
+            indexArray        = array.array('i', indices)
+
+            weightsArray           = array.array('f', weights)
+            boneIdsArray           = array.array('b', boneIds)
+
+            boneNamesArray          = array.array('b', boneNames)
+            boneNameOffestsArray    = array.array('i', boneNameOffests)
+            boneParentsArray        = array.array('b', boneParents)
+            boneMatricesArray       = array.array('f', boneMatrices)
+
+            magicNumber.tofile(f)
+            objectsArray.tofile(f)
+            verticesArray.tofile(f)
+            texCoordArray.tofile(f)
+            normalsArray.tofile(f)
+            weightsArray.tofile(f)
+            boneIdsArray.tofile(f)
+            
+            indexArray.tofile(f)
+            
+            if rig is None:
+                array.array('b', [0]).tofile(f)
+                print("No armature found, skipping")
             else:
-                texCoords.extend( mesh.uv_layers.active.data[texCoordId].uv ) 
-                
-            normals.extend(vertex.normal)
-            weights.extend(weightsUnsorted[vertId])
-            boneIds.extend(boneIdsUnsorted[vertId])
- 
-        """
-            SET ARMATURE DATA
-        """
-        boneNames       = []
-        boneNameOffests = []
-        boneMatrices    = []
-        boneParents     = []
-        
-        offset = 0
-        # TODO: Find better way to do this
-        rig = None # bpy.data.objects['Armature']
-        for armature in [ob for ob in bpy.data.objects if ob.type == 'ARMATURE']:
-            rig = armature
+                array.array('b', [1]).tofile(f)
+                boneNameOffestsArray.tofile(f)
+                boneNamesArray.tofile(f)
+                boneParentsArray.tofile(f)
+                boneMatricesArray.tofile(f)
+
+            f.close()
+            
+            print("Finished")
             break
 
-        if rig is not None:
-            
-            boneNameOffests.append(len( rig.data.bones ))        # number of bones
-        
-            for x, b in enumerate(rig.data.bones):
-                tempString = b.name
-                tempList   = [ord(c) for c in tempString]
-                boneNames.extend( tempList )
-                boneNameOffests.append( offset )
-                offset += len( tempList )
-                boneNameOffests.append( len( tempList ) )
-                
-                for j in range(3):
-                    for i in range(3):
-                        boneMatrices.append( b.matrix[i][j] )
-                
-                parentid = -1
-                if b.parent is not None:
-                    parentid = rig.data.bones.find( b.parent.name )
-                
-                boneParents.append( parentid )
-            
-
-        """
-            WRITE EVERYTHING TO FILE
-        """
-        
-        print("Exporting to: " + self.filepath)
-        f = open(self.filepath, "wb")
-
-        magicNumber       = array.array('b', 'MOD4'.encode())
-        headerArray       = array.array('i', header)
-        objectsArray      = array.array('i', objects)
-        verticesArray     = array.array('f', vertices)
-        texCoordArray     = array.array('f', texCoords)
-        normalsArray      = array.array('f', normals)
-        facesIndArray     = array.array('i', indices)
-
-        weightsArray           = array.array('f', weights)
-        boneIdsArray           = array.array('b', boneIds)
-
-        boneNamesArray          = array.array('b', boneNames)
-        boneNameOffestsArray    = array.array('i', boneNameOffests)
-        boneParentsArray        = array.array('b', boneParents)
-        boneMatricesArray       = array.array('f', boneMatrices)
-
-        magicNumber.tofile(f)
-        headerArray.tofile(f)
-        
-        objectsArray.tofile(f)
-        
-        verticesArray.tofile(f)
-        texCoordArray.tofile(f)
-        normalsArray.tofile(f)
-        weightsArray.tofile(f)
-        boneIdsArray.tofile(f)
-        
-        facesIndArray.tofile(f)
-        
-        if rig is None:
-            array.array('b', [0]).tofile(f)
-            print("No armature found, skipping")
-        else:
-            array.array('b', [1]).tofile(f)
-            boneNameOffestsArray.tofile(f)
-            boneNamesArray.tofile(f)
-            boneParentsArray.tofile(f)
-            boneMatricesArray.tofile(f)
-
-        f.close()
-        
-        print("Finished")
         return {'FINISHED'}
     
 def menu_func_export(self, context):
