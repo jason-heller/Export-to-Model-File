@@ -13,6 +13,45 @@ bl_info = {
     "category": "Import-Export",
 }
 
+"""
+struct sHeader
+{
+    uint32 magic number & version id ('MOD4')
+    uint32 numObjects;
+};
+struct sObjects
+{
+    uint32 materialId; (UNUSED)
+    uint32 numVertices;
+    uint32 numTexCoords;
+    uint32 numNormals;
+    uint32 numFaceIndices;
+};
+
+MESH DATA
+
+string[] texFileNames
+vec3 vertices
+vec2 texCoords
+vec3 normals
+float[] vertexWeights
+int[] faceIndices
+int[] vertexWeightIndices
+int[] vertexBoneIds
+
+ARMATURE DATA
+
+uint8 numBones
+struct sBoneName
+{
+    uint32 offsetBoneName;
+    uint32 lengthBoneName;
+};
+String[] boneNames
+int[] boneParents
+float[] boneMatrices
+"""
+
 import bpy
 import array
     
@@ -35,46 +74,63 @@ IOOBJOrientationHelper = orientation_helper_factory("IOOBJOrientationHelper", ax
    
    
 class ExportMOD(bpy.types.Operator, ExportHelper, IOOBJOrientationHelper):
-
     bl_idname = "export_scene_normals.mod"
     bl_label = 'Export MOD'
     bl_options = {'PRESET'}
 
     filename_ext = ".mod"
     filter_glob = StringProperty(
-            default = "*.mod",
-            options = {'HIDDEN'},
+            default="*.mod",
+            options={'HIdDEN'},
             )
             
     def execute(self, context):
-        # Force into object mode
+        # Exit edit mode before exporting, so current object states are exported properly.
         if bpy.ops.object.mode_set.poll():
             bpy.ops.object.mode_set(mode='OBJECT')
             
+        keywords = self.as_keywords(ignore=("axis_forward",
+                                            "axis_up",
+                                            "global_scale",
+                                            "check_existing",
+                                            "filter_glob",
+                                            ))
+                                        
+        headerSize     = 8 + 4      # + 4 is the magic number (MOD4)
+        objectsSize    = 40
+
         numObjects        = len(bpy.data.meshes)
 
-        header  = []                    # All data relating to the header for export (in ints)
-        objects = []                    # All data relating to the objects for export
+        header              = []
+        objects             = []
         
-        weightsUnsorted     = []        # \ The weights and respective bones, in the same order as mesh.vertices
-        boneIdsUnsorted     = []        # /
-        
-        vertices    = []                # \ 
-        texCoords   = []                # |
-        normals     = []                # | .. Raw mesh data
-        weights     = []                # | 
-        boneIds     = []                # |
-        indices     = []                # /
+        vertices            = []
+        vertexBoneIdOffset  = []
+        weightsUnsorted     = []
+        boneIdsUnsorted     = []
+        texCoords           = []
+        normals             = []
+        faceIndices         = []
 
-        translation = []                # In case the mesh is translated in blender
+        positionOffset      = []
 
+        offsetVertexBoneStride  = []
+        offsetVertexBoneId      = []
+        offsetVertexBoneWeight  = []
+
+        """
+            SET POSITION OFFSET
+        """
         for object in bpy.data.objects:
             if object.type == "MESH":
                 x = object.matrix_local[0].w
                 y = object.matrix_local[1].w
                 z = object.matrix_local[2].w
-                translation.append([x, y, z])
+                positionOffset.append([x, y, z])
 
+        """
+            SET DATA
+        """
         i = 0
 
         maxInfluence = 3
@@ -124,15 +180,17 @@ class ExportMOD(bpy.types.Operator, ExportHelper, IOOBJOrientationHelper):
                 for influence in byWeight:
                     weightsUnsorted.append( influence.weight )
                     boneIdsUnsorted.append( influence.group )
-                for x in range(len(byWeight) - 1, maxInfluence):
+                """for x in range(len(byWeight) - 1, maxInfluence):
                     weightsUnsorted.append( 0 )
-                    boneIdsUnsorted.append( 0 )
+                    boneIdsUnsorted.append( 0 )"""
             
             i += 1
 
         # Reorganize vertices, texture coords, and indices
         newVertexArray = []
         newTexCoordArray = []
+        weights = []
+        boneIds = []
         
         curIndexId = -1
         for polygon in mesh.polygons:
@@ -142,14 +200,14 @@ class ExportMOD(bpy.types.Operator, ExportHelper, IOOBJOrientationHelper):
             
                 for k in range(0, len(newVertexArray)):
                     if newVertexArray[k] == polygon.vertices[j] and curIndexId == newTexCoordArray[k]:
-                        indices.append(k)
+                        faceIndices.append(k)
                         exists = True
                         break
                 
                 if not exists:
                     newVertexArray.append(polygon.vertices[j])
                     newTexCoordArray.append(curIndexId)
-                    indices.append(len(newVertexArray) - 1)
+                    faceIndices.append(len(newVertexArray) - 1)
         
         # Add to arrays
         
@@ -161,16 +219,18 @@ class ExportMOD(bpy.types.Operator, ExportHelper, IOOBJOrientationHelper):
             x = vertex.co.x
             y = vertex.co.y
             z = vertex.co.z
-            vertices.extend([y + translation[i][1], z + translation[i][2], x + translation[i][0]])
+            vertices.extend( [ y+positionOffset[i][1], z+positionOffset[i][2], x+positionOffset[i][0] ] )
             
             if mesh.uv_layers is None:
-                texCoords.extend([0, 0]) 
+                texCoords.extend( [0, 0] ) 
             else:
                 texCoords.extend( mesh.uv_layers.active.data[texCoordId].uv ) 
                 
-            normals.extend(vertex.normal)
-            weights.extend(weightsUnsorted[vertId])
-            boneIds.extend(boneIdsUnsorted[vertId])
+            normals.extend( vertex.normal )
+            weights.extend( weightsUnsorted[vertId] )
+            boneIds.extend( boneIdsUnsorted[vertId] )
+
+        vertexBoneIdOffset.append( weightOffset )
 
         """
             SET HEADER
@@ -239,7 +299,7 @@ class ExportMOD(bpy.types.Operator, ExportHelper, IOOBJOrientationHelper):
         verticesArray     = array.array('f', vertices)
         texCoordArray     = array.array('f', texCoords)
         normalsArray      = array.array('f', normals)
-        facesIndArray     = array.array('i', indices)
+        facesIndArray     = array.array('i', faceIndices)
 
         weightsArray           = array.array('f', weights)
         boneIdsArray           = array.array('b', boneIds)
