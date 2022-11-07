@@ -1,14 +1,13 @@
 bl_info = {
     "name": ".MOD Export",
     "description": "Exports to proprietary .MOD format",
-    "author": "Jason H",
+    "author": "",
     "version": (1, 0),
     "blender": (2, 65, 0),
     "location": "File > Import-Export",
     "warning": "", # used for warning icon and text in addons panel
-    "doc_url": "http://wiki.blender.org/index.php/Extensions:2.6/Py/"
-                "Scripts/My_Script",
-    "tracker_url": "https://developer.blender.org/maniphest/task/edit/form/2/",
+    "doc_url": "",
+    "tracker_url": "",
     "support": "COMMUNITY",
     "category": "Import-Export",
 }
@@ -45,7 +44,9 @@ class ExportMOD(bpy.types.Operator, ExportHelper):
     bl_options  = { 'PRESET' }
 
     filename_ext    = ".mod"
-    filter_glob     = StringProperty(default = "*.mod", options = {'HIDDEN'},)
+    filter_glob     = StringProperty(default = "*.mod", options = {'HIDDEN'},
+
+    version = b'\x02\x00'	# MAJOR, MINOR
           
     def execute(self, context):
     
@@ -59,14 +60,29 @@ class ExportMOD(bpy.types.Operator, ExportHelper):
         
         maxInfluence = 3                # Max number of bones allows to influence a single vertex
     
+        # TODO: Find better way to do this
+	# Determine if model has an armature
+        rig = None # bpy.data.objects['Armature']
+        for armature in [ob for ob in bpy.data.objects if ob.type == 'ARMATURE']:
+            rig = armature
+            break
+
         print("Exporting to: " + self.filepath)
         f = open(self.filepath, "wb")
 
-        magicNumber             = array.array('b', 'MOD4'.encode())
-        magicNumber.tofile(f)
-        numMeshes = array.array('b', [len(bpy.data.meshes)])
-        numMeshes.tofile(f)
+	### Header ###
+
+        array.array('b', 'ANIMDL'.encode()).tofile(f)	# \ Magic number
+	f.write(version)				# / Version
+
+	flags = 0
+
+	if rig is not None:
+		flags = 1
         
+	f.write(bytes([flags]))			# Model flags
+	f.write(bytes([len(bpy.data.meshes)]))	# Number of meshes present
+
         for mesh in bpy.data.meshes:
         
             weightsUnsorted = []        # \ The weights and respective bones, in the same order as mesh.vertices
@@ -82,10 +98,10 @@ class ExportMOD(bpy.types.Operator, ExportHelper):
             indices     = []                # /
         
             print(mesh.name)
-            nameLength = array.array('i', [len(mesh.name)])
-            nameLength.tofile(f)
+            
             meshName = array.array('b', mesh.name.encode())
             meshName.tofile(f)
+	    f.write(bytes[0])
             
             #set vertices
             
@@ -186,7 +202,6 @@ class ExportMOD(bpy.types.Operator, ExportHelper):
             """
                 WRITE EVERYTHING TO FILE
             """
-            objects.append(0)                               # materialId (placeholder)
             objects.append(len(vertices) // 3)              # numVertices
             objects.append(len(indices))                    # numFaces
             
@@ -225,29 +240,19 @@ class ExportMOD(bpy.types.Operator, ExportHelper):
         boneNameOffests = []
         boneMatrices    = []
         boneParents     = []
-        
-        offset = 0
-        # TODO: Find better way to do this
-        rig = None # bpy.data.objects['Armature']
-        for armature in [ob for ob in bpy.data.objects if ob.type == 'ARMATURE']:
-            rig = armature
-            break
 
         if rig is not None:
-            
-            boneNameOffests.append(len( rig.data.bones ))        # number of bones
+                 
+	    f.write(bytes([len(rig.data.bones)]))		# number of bones
         
             for x, b in enumerate(rig.data.bones):
                 tempString = b.name
-                tempList   = [ord(c) for c in tempString]
-                boneNames.extend( tempList )
-                boneNameOffests.append( offset )
-                offset += len( tempList )
-                boneNameOffests.append( len( tempList ) )
+                tempList   = [ord(c) for c in tempString] + '\0'
+                boneNames.extend(tempList)
                 
                 for j in range(3):
                     for i in range(3):
-                        boneMatrices.append( b.matrix[i][j] )
+                        boneMatrices.append(b.matrix[i][j])
                 
                 parentid = -1
                 if b.parent is not None:
@@ -255,20 +260,17 @@ class ExportMOD(bpy.types.Operator, ExportHelper):
                 
                 boneParents.append( parentid )
         
-        boneNamesArray          = array.array('b', boneNames)
-        boneNameOffestsArray    = array.array('i', boneNameOffests)
-        boneParentsArray        = array.array('b', boneParents)
-        boneMatricesArray       = array.array('f', boneMatrices)
-        
-        if rig is None:
-            array.array('b', [0]).tofile(f)
-            print("No armature found, skipping")
-        else:
-            array.array('b', [1]).tofile(f)
+            boneNamesArray          = array.array('b', boneNames)
+            boneNameOffestsArray    = array.array('H', boneNameOffests)
+            boneParentsArray        = array.array('b', boneParents)
+            boneMatricesArray       = array.array('f', boneMatrices)
             boneNameOffestsArray.tofile(f)
             boneNamesArray.tofile(f)
             boneParentsArray.tofile(f)
             boneMatricesArray.tofile(f)
+        else:
+	    print("No armature found, skipping")
+
         f.close()
         return {'FINISHED'}
         
@@ -277,13 +279,11 @@ def menu_func_export(self, context):
     
 def register():
     bpy.utils.register_module(__name__)
-
     bpy.types.INFO_MT_file_export.append(menu_func_export)
 
 
 def unregister():
     bpy.utils.unregister_module(__name__)
-
     bpy.types.INFO_MT_file_export.remove(menu_func_export)
 
 if __name__ == "__main__":
