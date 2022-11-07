@@ -1,0 +1,30 @@
+File Format:
+
+BYTE[] "ANIMDL"			Magic Number (ascii)
+BYTE major			\ Version
+BYTE minor			/ (Major, Minor)
+BYTE flags			Model flags, uuuuuuuA (u = unused, A = has armature)
+BYTE numMeshes			Total Meshes contained
+
+repeat (numMeshes) amount of times:
+
+	BYTE[] name		Mesh name (ascii) 0x00 terminated
+	INT numVertices	
+	INT numIndices
+
+	FLOAT[] positions	ordered list of vertex positions as such: x1,y1,z1,...,xn,yn,zn
+	FLOAT[]	texCoords	ordered list of texture coordinates as such: s1,t1,...,sn,tn
+	FLOAT[] normals		normals per vertex: Nx1,Ny1,Nz1,...,Nxn,Nyn,Nzn
+	FLOAT[] weights		weights per vertex, each vertex has 3: Wa1,Wa2,Wa3, Wb1,Wb2,Wb3, .. , Wn1,Wn2,Wn3
+	BYTE[] bones		ID of bones associated per weight, bijective with weights array
+
+	INT[] indices		ordered list of indices (maps to vertices above): i1,i2,...,in
+
+if the armature flag is set:
+
+BYTE numBones			Total number of bones
+BYTE[] boneNames		Bone names (ascii) 0x00 terminated
+BYTE[] boneParents		ordered list of each bones parent
+FLOAT[] boneMatrices		ordered list 3x3 rotation matrix, column wise
+#FLOAT[] bonePosition		<- todo
+#FLOAT[] boneQuat		<- todo (to replace matrices)
